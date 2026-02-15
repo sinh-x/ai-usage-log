@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "ai-usage-log"
+version = "0.1.0"
+description = "MCP server for AI session logging — tracks learnings, verifications, and growth across AI agents"
+authors = ["Sinh Nguyen <sinh@sinhn.com>"]
+readme = "README.md"
+packages = [{include = "ai_usage_log", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4"
+mcp = {version = ">=1.0.0", extras = ["cli"]}
+pydantic = "^2.0"
+aiofiles = "^24.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.24"
+
+[tool.poetry.scripts]
+ai-usage-log = "ai_usage_log.server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
