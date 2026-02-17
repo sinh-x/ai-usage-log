@@ -1,6 +1,8 @@
 { pkgs, lib, config, inputs, ... }:
 
 {
+  name = "ai-usage-log";
+
   env = {
     GREET = "AI Usage Log MCP Server Development Environment";
     POETRY_VIRTUALENVS_IN_PROJECT = "true";

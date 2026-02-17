@@ -77,3 +77,56 @@ class DailySummaryResult(BaseModel):
     """Result of creating a daily summary."""
     path: str
     created: bool
+
+
+# --- Claude JSONL session models ---
+
+
+class ConversationTurn(BaseModel):
+    """A single user→assistant conversation turn."""
+    timestamp: str
+    user_prompt: str
+    tools_used: list[str]
+    response_summary: str
+
+
+class ClaudeSessionData(BaseModel):
+    """Full parsed data from a Claude Code JSONL session."""
+    session_id: str
+    project_path: str
+    project_name: str
+    git_branch: str | None
+    model: str | None
+    start_time: str
+    end_time: str
+    duration_minutes: float
+    conversation: list[ConversationTurn]
+    total_user_messages: int
+    total_assistant_messages: int
+    total_tool_calls: int
+    total_tokens: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    tools_summary: dict[str, int]
+    files_read: list[str]
+    files_written: list[str]
+    commands_run: list[str]
+
+
+class ClaudeSessionInfo(BaseModel):
+    """Summary info for a Claude Code JSONL session."""
+    session_id: str
+    project_path: str
+    project_name: str
+    start_time: str | None
+    message_count: int
+    git_branch: str | None
+    is_current: bool
+
+
+class ClaudeSessionList(BaseModel):
+    """List of discovered Claude Code sessions."""
+    sessions: list[ClaudeSessionInfo]
+    count: int

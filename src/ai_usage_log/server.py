@@ -2,11 +2,12 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from .tools import context_tools, daily_tools, project_tools, session_tools, tracking_tools
+from .tools import claude_session_tools, context_tools, daily_tools, project_tools, session_tools, tracking_tools
 
 mcp = FastMCP("ai_usage_log")
 
 # Register all tool modules
+claude_session_tools.register(mcp)
 context_tools.register(mcp)
 session_tools.register(mcp)
 tracking_tools.register(mcp)
