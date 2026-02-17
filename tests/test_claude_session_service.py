@@ -669,3 +669,181 @@ class TestPerTurnTokens:
         assert turn_output == data.output_tokens
         assert turn_cache_r == data.cache_read_tokens
         assert turn_cache_c == data.cache_creation_tokens
+
+    def test_orphan_tokens_before_first_user_message(self, tmp_path):
+        """Assistant entries before first user message should not lose tokens.
+
+        Regression test for #4: when assistant entries precede the first real
+        user message, their tokens were added to session totals but not to any
+        ConversationTurn.tokens, breaking the sum invariant.
+        """
+        entries = [
+            # Assistant entries before any user message (orphan tokens)
+            _assistant_entry(
+                [_text_block("System init response")],
+                timestamp="2026-02-15T10:00:00.000Z",
+                input_tokens=50,
+                output_tokens=20,
+                cache_read=500,
+                cache_creation=1000,
+            ),
+            _assistant_entry(
+                [_text_block("Another pre-user response")],
+                timestamp="2026-02-15T10:00:05.000Z",
+                input_tokens=30,
+                output_tokens=10,
+                cache_read=300,
+                cache_creation=200,
+            ),
+            # First real user message
+            _user_entry("Hello!", timestamp="2026-02-15T10:01:00.000Z"),
+            _assistant_entry(
+                [_text_block("Hi there!")],
+                timestamp="2026-02-15T10:01:05.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=200,
+                cache_creation=0,
+            ),
+            # Second turn
+            _user_entry("What's up?", timestamp="2026-02-15T10:02:00.000Z"),
+            _assistant_entry(
+                [_text_block("Not much!")],
+                timestamp="2026-02-15T10:02:05.000Z",
+                input_tokens=120,
+                output_tokens=60,
+                cache_read=100,
+                cache_creation=0,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-orphan", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-orphan", "/home/user/proj")
+
+        # Session totals include ALL assistant entries
+        assert data.input_tokens == 300   # 50+30+100+120
+        assert data.output_tokens == 140  # 20+10+50+60
+        assert data.cache_read_tokens == 1100   # 500+300+200+100
+        assert data.cache_creation_tokens == 1200  # 1000+200+0+0
+
+        # Per-turn sums MUST match session totals (orphan tokens drained into first turn)
+        turn_input = sum(t.tokens.input_tokens for t in data.conversation)
+        turn_output = sum(t.tokens.output_tokens for t in data.conversation)
+        turn_cache_r = sum(t.tokens.cache_read_tokens for t in data.conversation)
+        turn_cache_c = sum(t.tokens.cache_creation_tokens for t in data.conversation)
+
+        assert turn_input == data.input_tokens
+        assert turn_output == data.output_tokens
+        assert turn_cache_r == data.cache_read_tokens
+        assert turn_cache_c == data.cache_creation_tokens
+
+        # First turn should contain orphan tokens + its own tokens
+        t1 = data.conversation[0].tokens
+        assert t1.input_tokens == 180   # 50+30 (orphan) + 100 (own)
+        assert t1.output_tokens == 80   # 20+10 (orphan) + 50 (own)
+
+        # Second turn should have only its own tokens
+        t2 = data.conversation[1].tokens
+        assert t2.input_tokens == 120
+        assert t2.output_tokens == 60
+
+    def test_all_orphan_no_user_messages(self, tmp_path):
+        """Session with only assistant entries and no user messages.
+
+        Edge case: all tokens are orphaned, no turns exist to drain into.
+        Session totals should still be correct; conversation should be empty.
+        """
+        entries = [
+            _assistant_entry(
+                [_text_block("Init")],
+                timestamp="2026-02-15T10:00:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=500,
+                cache_creation=200,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-no-user", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-no-user", "/home/user/proj")
+
+        # Session totals still correct
+        assert data.input_tokens == 100
+        assert data.output_tokens == 50
+        assert data.total_tokens == 850
+
+        # No turns to attribute tokens to
+        assert len(data.conversation) == 0
+
+    def test_context_window_single_assistant_per_turn(self, tmp_path):
+        """context_window should be the input-side tokens of the last API call."""
+        entries = [
+            _user_entry("Q1", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("A1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=10,
+                output_tokens=50,
+                cache_read=25000,
+                cache_creation=3000,
+            ),
+            _user_entry("Q2", timestamp="2026-02-15T10:02:00.000Z"),
+            _assistant_entry(
+                [_text_block("A2")],
+                timestamp="2026-02-15T10:03:00.000Z",
+                input_tokens=10,
+                output_tokens=75,
+                cache_read=28000,
+                cache_creation=500,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cw-basic", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cw-basic", "/home/user/proj")
+
+        # context_window = input + cache_read + cache_creation (no output)
+        assert data.conversation[0].context_window == 10 + 25000 + 3000  # 28010
+        assert data.conversation[1].context_window == 10 + 28000 + 500   # 28510
+        # Context should grow between turns
+        assert data.conversation[1].context_window > data.conversation[0].context_window
+
+    def test_context_window_multiple_api_calls_per_turn(self, tmp_path):
+        """With multiple assistant entries per turn, context_window = last call's input-side."""
+        entries = [
+            _user_entry("Do something", timestamp="2026-02-15T10:00:00.000Z"),
+            # First API call (tool use)
+            _assistant_entry(
+                [_tool_use_block("Read", {"file_path": "/tmp/a.py"})],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=5,
+                output_tokens=10,
+                cache_read=50000,
+                cache_creation=2000,
+            ),
+            # Tool result (filtered as tool_result-only)
+            _user_entry(
+                [_tool_result_block("file contents")],
+                timestamp="2026-02-15T10:01:05.000Z",
+            ),
+            # Second API call (with tool result in context — larger)
+            _assistant_entry(
+                [_text_block("Here's the file")],
+                timestamp="2026-02-15T10:01:10.000Z",
+                input_tokens=5,
+                output_tokens=30,
+                cache_read=52000,
+                cache_creation=800,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cw-multi", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cw-multi", "/home/user/proj")
+
+        assert len(data.conversation) == 1
+        # Should be the LAST API call's input-side, not the first
+        assert data.conversation[0].context_window == 5 + 52000 + 800  # 52805
+        # NOT 5 + 50000 + 2000 = 52005 (first call)

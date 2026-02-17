@@ -101,6 +101,7 @@ class ConversationTurn(BaseModel):
     tools_used: list[str]
     response_summary: str
     tokens: TurnTokens | None = None
+    context_window: int = 0  # prompt size of last API call (input + cache_read + cache_creation)
 
 
 class ClaudeSessionData(BaseModel):

@@ -39,6 +39,7 @@ class _TurnAccumulator:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    context_window: int = 0  # last API call's input-side tokens
 
 
 @dataclass
@@ -61,6 +62,12 @@ class _ParseState:
     commands_run: list[str] = field(default_factory=list)
     turns: list[ConversationTurn] = field(default_factory=list)
     current_turn: _TurnAccumulator | None = None
+    # Tokens from assistant entries before first user message (orphan tokens)
+    orphan_input_tokens: int = 0
+    orphan_output_tokens: int = 0
+    orphan_cache_read_tokens: int = 0
+    orphan_cache_creation_tokens: int = 0
+    orphan_drained: bool = False
 
 
 class ClaudeSessionService:
@@ -380,12 +387,23 @@ class ClaudeSessionService:
             state.cache_read_tokens += cache_r
             state.cache_creation_tokens += cache_c
 
-            # Accumulate per-turn tokens
+            # Context window = input-side tokens of this single API call
+            context_window = inp + cache_r + cache_c
+
+            # Accumulate per-turn tokens (buffer if no turn exists yet)
             if state.current_turn:
                 state.current_turn.input_tokens += inp
                 state.current_turn.output_tokens += out
                 state.current_turn.cache_read_tokens += cache_r
                 state.current_turn.cache_creation_tokens += cache_c
+                # Last API call's context window wins (most up-to-date)
+                if context_window > 0:
+                    state.current_turn.context_window = context_window
+            else:
+                state.orphan_input_tokens += inp
+                state.orphan_output_tokens += out
+                state.orphan_cache_read_tokens += cache_r
+                state.orphan_cache_creation_tokens += cache_c
 
         # Process content blocks
         content = message.get("content", [])
@@ -436,6 +454,15 @@ class ClaudeSessionService:
         if turn is None:
             return
 
+        # Drain orphan tokens (from assistant entries before first user message)
+        # into the first turn so that sum(turn.tokens) == session totals.
+        if not state.orphan_drained:
+            turn.input_tokens += state.orphan_input_tokens
+            turn.output_tokens += state.orphan_output_tokens
+            turn.cache_read_tokens += state.orphan_cache_read_tokens
+            turn.cache_creation_tokens += state.orphan_cache_creation_tokens
+            state.orphan_drained = True
+
         response_summary = ""
         if turn.response_texts:
             combined = " ".join(turn.response_texts)
@@ -455,6 +482,7 @@ class ClaudeSessionService:
                 tools_used=turn.tools_used,
                 response_summary=response_summary,
                 tokens=turn_tokens,
+                context_window=turn.context_window,
             )
         )
         state.current_turn = None
