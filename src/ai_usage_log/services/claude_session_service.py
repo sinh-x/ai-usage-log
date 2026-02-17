@@ -11,11 +11,14 @@ from ..models.schemas import (
     ClaudeSessionInfo,
     ClaudeSessionList,
     ConversationTurn,
+    TurnCommand,
     TurnTokens,
 )
 
 # Entry types to skip entirely
-_SKIP_TYPES = frozenset({"file-history-snapshot", "progress", "queue-operation", "system"})
+_SKIP_TYPES = frozenset({"file-history-snapshot", "queue-operation", "system"})
+
+_MAX_COMMAND_LEN = 200
 
 # Patterns in user content that indicate non-real messages
 _SYSTEM_TAG_PATTERN = re.compile(
@@ -40,6 +43,12 @@ class _TurnAccumulator:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     context_window: int = 0  # last API call's input-side tokens
+    subagent_input_tokens: int = 0
+    subagent_output_tokens: int = 0
+    subagent_cache_creation_tokens: int = 0
+    pending_commands: dict[str, str] = field(default_factory=dict)  # tool_use.id → command
+    resolved_commands: list[tuple[str, str]] = field(default_factory=list)  # (command, status)
+    files_modified: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +77,15 @@ class _ParseState:
     orphan_cache_read_tokens: int = 0
     orphan_cache_creation_tokens: int = 0
     orphan_drained: bool = False
+    # Streamed chunk dedup: message.id → last usage values seen
+    seen_msg_ids: dict[str, dict] = field(default_factory=dict)
+    # Sub-agent tokens (session-level)
+    subagent_input_tokens: int = 0
+    subagent_output_tokens: int = 0
+    subagent_cache_creation_tokens: int = 0
+    seen_subagent_msg_ids: dict[str, dict] = field(default_factory=dict)
+    # Maps task tool_use_id → turn index for attributing sub-agent tokens
+    task_tool_use_ids: dict[str, int] = field(default_factory=dict)
 
 
 class ClaudeSessionService:
@@ -240,10 +258,10 @@ class ClaudeSessionService:
             except (ValueError, TypeError):
                 pass
 
+        # total_tokens excludes cache_read (misleading when summed across turns)
         total_tokens = (
             state.input_tokens
             + state.output_tokens
-            + state.cache_read_tokens
             + state.cache_creation_tokens
         )
 
@@ -265,6 +283,9 @@ class ClaudeSessionService:
             output_tokens=state.output_tokens,
             cache_read_tokens=state.cache_read_tokens,
             cache_creation_tokens=state.cache_creation_tokens,
+            subagent_input_tokens=state.subagent_input_tokens,
+            subagent_output_tokens=state.subagent_output_tokens,
+            subagent_cache_creation_tokens=state.subagent_cache_creation_tokens,
             tools_summary=dict(state.tools_summary),
             files_read=sorted(state.files_read),
             files_written=sorted(state.files_written),
@@ -311,6 +332,8 @@ class ClaudeSessionService:
             self._process_user_entry(entry, state)
         elif entry_type == "assistant":
             self._process_assistant_entry(entry, state)
+        elif entry_type == "progress":
+            self._process_progress_entry(entry, state)
 
     def _process_user_entry(self, entry: dict, state: _ParseState) -> None:
         """Process a user-type JSONL entry."""
@@ -346,6 +369,16 @@ class ClaudeSessionService:
         if isinstance(content, list):
             types = {block.get("type") for block in content if isinstance(block, dict)}
             if types == {"tool_result"}:
+                # Resolve pending commands from tool results
+                if state.current_turn:
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_result":
+                            continue
+                        tool_use_id = block.get("tool_use_id", "")
+                        if tool_use_id in state.current_turn.pending_commands:
+                            cmd = state.current_turn.pending_commands.pop(tool_use_id)
+                            status = "error" if block.get("is_error") else "success"
+                            state.current_turn.resolved_commands.append((cmd, status))
                 return
             # Could be a real message with text blocks
             text_parts = []
@@ -374,7 +407,7 @@ class ClaudeSessionService:
             if model:
                 state.model = model
 
-        # Extract token usage
+        # Extract token usage with streamed chunk dedup
         usage = message.get("usage", {})
         if usage:
             inp = usage.get("input_tokens", 0)
@@ -382,28 +415,49 @@ class ClaudeSessionService:
             cache_r = usage.get("cache_read_input_tokens", 0)
             cache_c = usage.get("cache_creation_input_tokens", 0)
 
-            state.input_tokens += inp
-            state.output_tokens += out
-            state.cache_read_tokens += cache_r
-            state.cache_creation_tokens += cache_c
+            # Dedup streamed chunks: multiple lines share message.id with cumulative output_tokens
+            msg_id = message.get("id", "")
+            prev_usage = state.seen_msg_ids.get(msg_id) if msg_id else None
+
+            if prev_usage:
+                # Subtract previous values, add current (effectively replaces with latest)
+                delta_inp = inp - prev_usage["inp"]
+                delta_out = out - prev_usage["out"]
+                delta_cache_r = cache_r - prev_usage["cache_r"]
+                delta_cache_c = cache_c - prev_usage["cache_c"]
+            else:
+                delta_inp = inp
+                delta_out = out
+                delta_cache_r = cache_r
+                delta_cache_c = cache_c
+
+            if msg_id:
+                state.seen_msg_ids[msg_id] = {
+                    "inp": inp, "out": out, "cache_r": cache_r, "cache_c": cache_c,
+                }
+
+            state.input_tokens += delta_inp
+            state.output_tokens += delta_out
+            state.cache_read_tokens += delta_cache_r
+            state.cache_creation_tokens += delta_cache_c
 
             # Context window = input-side tokens of this single API call
             context_window = inp + cache_r + cache_c
 
             # Accumulate per-turn tokens (buffer if no turn exists yet)
             if state.current_turn:
-                state.current_turn.input_tokens += inp
-                state.current_turn.output_tokens += out
-                state.current_turn.cache_read_tokens += cache_r
-                state.current_turn.cache_creation_tokens += cache_c
+                state.current_turn.input_tokens += delta_inp
+                state.current_turn.output_tokens += delta_out
+                state.current_turn.cache_read_tokens += delta_cache_r
+                state.current_turn.cache_creation_tokens += delta_cache_c
                 # Last API call's context window wins (most up-to-date)
                 if context_window > 0:
                     state.current_turn.context_window = context_window
             else:
-                state.orphan_input_tokens += inp
-                state.orphan_output_tokens += out
-                state.orphan_cache_read_tokens += cache_r
-                state.orphan_cache_creation_tokens += cache_c
+                state.orphan_input_tokens += delta_inp
+                state.orphan_output_tokens += delta_out
+                state.orphan_cache_read_tokens += delta_cache_r
+                state.orphan_cache_creation_tokens += delta_cache_c
 
         # Process content blocks
         content = message.get("content", [])
@@ -422,6 +476,7 @@ class ClaudeSessionService:
 
             elif block_type == "tool_use":
                 tool_name = block.get("name", "")
+                tool_use_id = block.get("id", "")
                 if tool_name:
                     state.total_tool_calls += 1
                     state.tools_summary[tool_name] = state.tools_summary.get(tool_name, 0) + 1
@@ -432,6 +487,89 @@ class ClaudeSessionService:
                     tool_input = block.get("input", {})
                     if isinstance(tool_input, dict):
                         self._extract_file_activity(tool_name, tool_input, state)
+
+                        # Per-turn command/file tracking
+                        if state.current_turn:
+                            if tool_name == "Bash":
+                                cmd = tool_input.get("command")
+                                if cmd and isinstance(cmd, str) and tool_use_id:
+                                    state.current_turn.pending_commands[tool_use_id] = cmd[:_MAX_COMMAND_LEN]
+                            elif tool_name in ("Write", "Edit"):
+                                path = tool_input.get("file_path")
+                                if path and isinstance(path, str):
+                                    state.current_turn.files_modified.append(path)
+
+                    # Track Task tool_use_ids for sub-agent attribution
+                    if tool_name == "Task" and tool_use_id:
+                        state.task_tool_use_ids[tool_use_id] = len(state.turns)
+
+    def _process_progress_entry(self, entry: dict, state: _ParseState) -> None:
+        """Process a progress-type JSONL entry (sub-agent messages)."""
+        data = entry.get("data", {})
+        if not isinstance(data, dict):
+            return
+
+        # Only handle agent_progress with assistant messages
+        if data.get("type") != "agent_progress":
+            return
+
+        inner_msg = data.get("message", {})
+        if not isinstance(inner_msg, dict) or inner_msg.get("type") != "assistant":
+            return
+
+        # Sub-agent tokens live at data.message.message.usage (doubly nested)
+        message = inner_msg.get("message", {})
+        if not isinstance(message, dict):
+            return
+
+        usage = message.get("usage", {})
+        if not usage:
+            return
+
+        inp = usage.get("input_tokens", 0)
+        out = usage.get("output_tokens", 0)
+        cache_c = usage.get("cache_creation_input_tokens", 0)
+
+        # Dedup by sub-agent message.id (sub-agents also stream chunks)
+        msg_id = message.get("id", "")
+        prev_usage = state.seen_subagent_msg_ids.get(msg_id) if msg_id else None
+
+        if prev_usage:
+            delta_inp = inp - prev_usage["inp"]
+            delta_out = out - prev_usage["out"]
+            delta_cache_c = cache_c - prev_usage["cache_c"]
+        else:
+            delta_inp = inp
+            delta_out = out
+            delta_cache_c = cache_c
+
+        if msg_id:
+            state.seen_subagent_msg_ids[msg_id] = {
+                "inp": inp, "out": out, "cache_c": cache_c,
+            }
+
+        # Accumulate session-level sub-agent tokens
+        state.subagent_input_tokens += delta_inp
+        state.subagent_output_tokens += delta_out
+        state.subagent_cache_creation_tokens += delta_cache_c
+
+        # Attribute to turn via toolUseID → task_tool_use_ids mapping
+        tool_use_id = entry.get("toolUseID", "")
+        turn_idx = state.task_tool_use_ids.get(tool_use_id)
+
+        if turn_idx is not None and turn_idx < len(state.turns):
+            # Turn already flushed — update it in place
+            turn = state.turns[turn_idx]
+            if turn.subagent_tokens is None:
+                turn.subagent_tokens = TurnTokens()
+            turn.subagent_tokens.input_tokens += delta_inp
+            turn.subagent_tokens.output_tokens += delta_out
+            turn.subagent_tokens.cache_creation_tokens += delta_cache_c
+        elif state.current_turn:
+            # Turn still accumulating
+            state.current_turn.subagent_input_tokens += delta_inp
+            state.current_turn.subagent_output_tokens += delta_out
+            state.current_turn.subagent_cache_creation_tokens += delta_cache_c
 
     def _extract_file_activity(self, tool_name: str, tool_input: dict, state: _ParseState) -> None:
         """Extract file reads, writes, and commands from tool inputs."""
@@ -475,6 +613,22 @@ class ClaudeSessionService:
             cache_creation_tokens=turn.cache_creation_tokens,
         )
 
+        # Build sub-agent tokens if any
+        subagent_tokens = None
+        if turn.subagent_input_tokens or turn.subagent_output_tokens or turn.subagent_cache_creation_tokens:
+            subagent_tokens = TurnTokens(
+                input_tokens=turn.subagent_input_tokens,
+                output_tokens=turn.subagent_output_tokens,
+                cache_creation_tokens=turn.subagent_cache_creation_tokens,
+            )
+
+        # Build commands list: resolved + remaining pending (default success)
+        commands: list[TurnCommand] = []
+        for cmd, status in turn.resolved_commands:
+            commands.append(TurnCommand(command=cmd, status=status))
+        for _tool_id, cmd in turn.pending_commands.items():
+            commands.append(TurnCommand(command=cmd, status="success"))
+
         state.turns.append(
             ConversationTurn(
                 timestamp=turn.timestamp,
@@ -483,6 +637,9 @@ class ClaudeSessionService:
                 response_summary=response_summary,
                 tokens=turn_tokens,
                 context_window=turn.context_window,
+                subagent_tokens=subagent_tokens,
+                commands=commands,
+                files_modified=turn.files_modified,
             )
         )
         state.current_turn = None

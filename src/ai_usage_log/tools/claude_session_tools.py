@@ -1,8 +1,9 @@
-"""Tools: list_claude_sessions, read_claude_session — read Claude Code JSONL sessions."""
+"""Tools: list_claude_sessions, read_claude_session, read_claude_sessions — read Claude Code JSONL sessions."""
 
 from mcp.server.fastmcp import FastMCP
 
 from ..config.settings import get_tz_offset
+from ..models.schemas import ClaudeSessionsBatchResult
 from ..services.claude_session_service import ClaudeSessionService
 
 
@@ -49,4 +50,31 @@ def register(mcp: FastMCP) -> None:
             project_path: Absolute project path to narrow search. Empty to scan all projects.
         """
         result = service.read_session(session_id=session_id, project_path=project_path)
+        return result.model_dump_json(indent=2)
+
+    @mcp.tool(
+        name="read_claude_sessions",
+        annotations={
+            "title": "Read Claude Sessions (Batch)",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    async def read_claude_sessions(
+        session_ids: list[str], project_path: str = ""
+    ) -> str:
+        """Batch-read multiple JSONL sessions and return trimmed summaries.
+
+        Args:
+            session_ids: List of session UUIDs to read.
+            project_path: Absolute project path to narrow search. Empty to scan all projects.
+        """
+        summaries = []
+        for sid in session_ids:
+            data = service.read_session(session_id=sid, project_path=project_path)
+            summaries.append(data.to_summary())
+
+        result = ClaudeSessionsBatchResult(sessions=summaries, count=len(summaries))
         return result.model_dump_json(indent=2)

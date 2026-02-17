@@ -31,9 +31,10 @@ def _assistant_entry(
     output_tokens=50,
     cache_read=0,
     cache_creation=0,
+    message_id=None,
 ):
     """Create an assistant-type JSONL entry."""
-    return {
+    entry = {
         "type": "assistant",
         "timestamp": timestamp,
         "message": {
@@ -48,18 +49,59 @@ def _assistant_entry(
             },
         },
     }
+    if message_id:
+        entry["message"]["id"] = message_id
+    return entry
+
+
+def _progress_entry(
+    tool_use_id,
+    input_tokens=0,
+    output_tokens=0,
+    cache_creation=0,
+    message_id="sub_msg_001",
+    data_type="agent_progress",
+    msg_type="assistant",
+):
+    """Create a progress-type JSONL entry for sub-agent tokens."""
+    return {
+        "type": "progress",
+        "toolUseID": tool_use_id,
+        "data": {
+            "type": data_type,
+            "message": {
+                "type": msg_type,
+                "message": {
+                    "id": message_id,
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_creation_input_tokens": cache_creation,
+                    },
+                },
+            },
+        },
+    }
 
 
 def _text_block(text):
     return {"type": "text", "text": text}
 
 
-def _tool_use_block(name, tool_input=None):
-    return {"type": "tool_use", "name": name, "input": tool_input or {}}
+def _tool_use_block(name, tool_input=None, tool_use_id=None):
+    block = {"type": "tool_use", "name": name, "input": tool_input or {}}
+    if tool_use_id:
+        block["id"] = tool_use_id
+    return block
 
 
-def _tool_result_block(content="ok"):
-    return {"type": "tool_result", "content": content}
+def _tool_result_block(content="ok", tool_use_id=None, is_error=None):
+    block = {"type": "tool_result", "content": content}
+    if tool_use_id:
+        block["tool_use_id"] = tool_use_id
+    if is_error is not None:
+        block["is_error"] = is_error
+    return block
 
 
 def _write_jsonl(path, entries):
@@ -360,7 +402,8 @@ class TestReadSession:
         assert data.output_tokens == 125
         assert data.cache_read_tokens == 300
         assert data.cache_creation_tokens == 300
-        assert data.total_tokens == 250 + 125 + 300 + 300
+        # total_tokens excludes cache_read (misleading when summed across turns)
+        assert data.total_tokens == 250 + 125 + 300
 
     def test_multiple_conversation_turns(self, tmp_path):
         entries = [
@@ -772,7 +815,8 @@ class TestPerTurnTokens:
         # Session totals still correct
         assert data.input_tokens == 100
         assert data.output_tokens == 50
-        assert data.total_tokens == 850
+        # total_tokens = input + output + cache_creation (excludes cache_read)
+        assert data.total_tokens == 100 + 50 + 200
 
         # No turns to attribute tokens to
         assert len(data.conversation) == 0
@@ -847,3 +891,421 @@ class TestPerTurnTokens:
         # Should be the LAST API call's input-side, not the first
         assert data.conversation[0].context_window == 5 + 52000 + 800  # 52805
         # NOT 5 + 50000 + 2000 = 52005 (first call)
+
+
+# --- Streamed chunk dedup tests ---
+
+
+class TestStreamedChunkDedup:
+    def test_streamed_chunks_dedup(self, tmp_path):
+        """Same message.id, multiple entries → counted once (last chunk wins)."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            # Streamed chunk 1: partial output
+            _assistant_entry(
+                [_text_block("Hel")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                message_id="msg_abc",
+                input_tokens=100,
+                output_tokens=10,
+                cache_read=500,
+                cache_creation=200,
+            ),
+            # Streamed chunk 2: cumulative output
+            _assistant_entry(
+                [_text_block("Hello there")],
+                timestamp="2026-02-15T10:01:01.000Z",
+                message_id="msg_abc",
+                input_tokens=100,
+                output_tokens=30,
+                cache_read=500,
+                cache_creation=200,
+            ),
+            # Streamed chunk 3: final cumulative
+            _assistant_entry(
+                [_text_block("Hello there, how are you?")],
+                timestamp="2026-02-15T10:01:02.000Z",
+                message_id="msg_abc",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=500,
+                cache_creation=200,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-dedup", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-dedup", "/home/user/proj")
+
+        # Should count as one API response, not 3x
+        assert data.input_tokens == 100  # not 300
+        assert data.output_tokens == 50  # not 90 (10+30+50)
+        assert data.cache_read_tokens == 500  # not 1500
+        assert data.cache_creation_tokens == 200  # not 600
+
+    def test_different_message_ids_not_deduped(self, tmp_path):
+        """Different message.id entries should each be counted."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("First response")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                message_id="msg_001",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            # Tool result
+            _user_entry(
+                [_tool_result_block("data")],
+                timestamp="2026-02-15T10:01:05.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("Second response")],
+                timestamp="2026-02-15T10:01:10.000Z",
+                message_id="msg_002",
+                input_tokens=200,
+                output_tokens=75,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-no-dedup", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-no-dedup", "/home/user/proj")
+
+        assert data.input_tokens == 300  # 100 + 200
+        assert data.output_tokens == 125  # 50 + 75
+
+
+# --- Sub-agent token tests ---
+
+
+class TestSubagentTokens:
+    def test_subagent_tokens_from_progress(self, tmp_path):
+        """agent_progress entries should accumulate subagent tokens."""
+        entries = [
+            _user_entry("Do complex task", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Task", {"prompt": "research"}, tool_use_id="toolu_task1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                message_id="msg_main",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            # Sub-agent progress
+            _progress_entry(
+                tool_use_id="toolu_task1",
+                input_tokens=500,
+                output_tokens=200,
+                cache_creation=100,
+                message_id="sub_msg_001",
+            ),
+            _progress_entry(
+                tool_use_id="toolu_task1",
+                input_tokens=800,
+                output_tokens=300,
+                cache_creation=50,
+                message_id="sub_msg_002",
+            ),
+            # Tool result
+            _user_entry(
+                [_tool_result_block("task done")],
+                timestamp="2026-02-15T10:02:00.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("Task complete")],
+                timestamp="2026-02-15T10:02:05.000Z",
+                message_id="msg_main2",
+                input_tokens=150,
+                output_tokens=60,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-subagent", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-subagent", "/home/user/proj")
+
+        # Session-level sub-agent tokens
+        assert data.subagent_input_tokens == 1300  # 500 + 800
+        assert data.subagent_output_tokens == 500  # 200 + 300
+        assert data.subagent_cache_creation_tokens == 150  # 100 + 50
+
+        # Main tokens should NOT include sub-agent tokens
+        assert data.input_tokens == 250  # 100 + 150
+        assert data.output_tokens == 110  # 50 + 60
+
+    def test_subagent_streamed_chunks_dedup(self, tmp_path):
+        """Sub-agent progress with same message.id should be deduped."""
+        entries = [
+            _user_entry("Do task", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Task", {}, tool_use_id="toolu_t1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                message_id="msg_m1",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            # Streamed sub-agent chunks (same message_id)
+            _progress_entry(
+                tool_use_id="toolu_t1",
+                input_tokens=500,
+                output_tokens=100,
+                message_id="sub_msg_same",
+            ),
+            _progress_entry(
+                tool_use_id="toolu_t1",
+                input_tokens=500,
+                output_tokens=250,
+                message_id="sub_msg_same",
+            ),
+            _user_entry(
+                [_tool_result_block("done")],
+                timestamp="2026-02-15T10:02:00.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("Done")],
+                timestamp="2026-02-15T10:02:05.000Z",
+                message_id="msg_m2",
+                input_tokens=120,
+                output_tokens=40,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-sub-dedup", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-sub-dedup", "/home/user/proj")
+
+        # Should take the last chunk's values (500 input, 250 output)
+        assert data.subagent_input_tokens == 500
+        assert data.subagent_output_tokens == 250
+
+    def test_non_agent_progress_ignored(self, tmp_path):
+        """Progress entries that are not agent_progress should be ignored."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            {"type": "progress", "data": "loading"},
+            {"type": "progress", "data": {"type": "other_progress"}},
+            _assistant_entry(
+                [_text_block("Hi")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-prog-skip", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-prog-skip", "/home/user/proj")
+
+        assert data.subagent_input_tokens == 0
+        assert data.subagent_output_tokens == 0
+
+
+# --- Per-turn commands tests ---
+
+
+class TestPerTurnCommands:
+    def test_commands_tracked_per_turn(self, tmp_path):
+        """Bash tool_use + tool_result → TurnCommand with status."""
+        entries = [
+            _user_entry("Run git status", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Bash", {"command": "git status"}, tool_use_id="toolu_bash1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+            _user_entry(
+                [_tool_result_block("On branch main", tool_use_id="toolu_bash1")],
+                timestamp="2026-02-15T10:01:05.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("You're on main branch")],
+                timestamp="2026-02-15T10:01:10.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cmd", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cmd", "/home/user/proj")
+
+        assert len(data.conversation) == 1
+        cmds = data.conversation[0].commands
+        assert len(cmds) == 1
+        assert cmds[0].command == "git status"
+        assert cmds[0].status == "success"
+
+    def test_command_error_status(self, tmp_path):
+        """tool_result with is_error=True → status 'error'."""
+        entries = [
+            _user_entry("Try something", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Bash", {"command": "exit 1"}, tool_use_id="toolu_fail")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+            _user_entry(
+                [_tool_result_block("command failed", tool_use_id="toolu_fail", is_error=True)],
+                timestamp="2026-02-15T10:01:05.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("That failed")],
+                timestamp="2026-02-15T10:01:10.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cmd-err", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cmd-err", "/home/user/proj")
+
+        cmds = data.conversation[0].commands
+        assert len(cmds) == 1
+        assert cmds[0].command == "exit 1"
+        assert cmds[0].status == "error"
+
+    def test_command_without_tool_result_defaults_success(self, tmp_path):
+        """Commands not resolved via tool_result default to 'success' on flush."""
+        entries = [
+            _user_entry("Run command", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Bash", {"command": "echo hello"}, tool_use_id="toolu_unresolved")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+            # No tool_result follows; next user message triggers flush
+            _user_entry("Next question", timestamp="2026-02-15T10:02:00.000Z"),
+            _assistant_entry(
+                [_text_block("OK")],
+                timestamp="2026-02-15T10:02:05.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cmd-pend", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cmd-pend", "/home/user/proj")
+
+        assert len(data.conversation) == 2
+        cmds = data.conversation[0].commands
+        assert len(cmds) == 1
+        assert cmds[0].status == "success"
+
+    def test_command_truncation(self, tmp_path):
+        """Long commands should be truncated to 200 chars."""
+        long_cmd = "a" * 500
+        entries = [
+            _user_entry("Run long cmd", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Bash", {"command": long_cmd}, tool_use_id="toolu_long")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-cmd-trunc", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-cmd-trunc", "/home/user/proj")
+
+        cmds = data.conversation[0].commands
+        assert len(cmds) == 1
+        assert len(cmds[0].command) == 200
+
+
+# --- Per-turn files modified tests ---
+
+
+class TestPerTurnFilesModified:
+    def test_files_modified_per_turn(self, tmp_path):
+        """Write/Edit tool_use → files_modified on the turn."""
+        entries = [
+            _user_entry("Edit files", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [
+                    _tool_use_block("Write", {"file_path": "/home/user/new.py"}),
+                    _tool_use_block("Edit", {"file_path": "/home/user/old.py"}),
+                ],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-files", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-files", "/home/user/proj")
+
+        assert len(data.conversation) == 1
+        assert "/home/user/new.py" in data.conversation[0].files_modified
+        assert "/home/user/old.py" in data.conversation[0].files_modified
+
+    def test_read_not_in_files_modified(self, tmp_path):
+        """Read tool should not appear in files_modified (only in files_read)."""
+        entries = [
+            _user_entry("Read file", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Read", {"file_path": "/home/user/readme.md"})],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-read-only", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-read-only", "/home/user/proj")
+
+        assert data.conversation[0].files_modified == []
+        assert "/home/user/readme.md" in data.files_read
+
+
+# --- to_summary tests ---
+
+
+class TestToSummary:
+    def test_session_data_to_summary(self, tmp_path):
+        """to_summary() should produce a ClaudeSessionSummary with subset of fields."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [
+                    _tool_use_block("Read", {"file_path": "/tmp/a.py"}),
+                    _text_block("Done"),
+                ],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=500,
+                cache_creation=200,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-summary", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-summary", "/home/user/proj")
+        summary = data.to_summary()
+
+        assert summary.session_id == data.session_id
+        assert summary.project_name == data.project_name
+        assert summary.input_tokens == data.input_tokens
+        assert summary.output_tokens == data.output_tokens
+        assert summary.cache_creation_tokens == data.cache_creation_tokens
+        assert summary.tools_summary == data.tools_summary
+        assert len(summary.conversation) == len(data.conversation)
+        # Summary should NOT have files_read, files_written, commands_run, cache_read_tokens
+        assert not hasattr(summary, "files_read")
+        assert not hasattr(summary, "files_written")
+        assert not hasattr(summary, "commands_run")
+        assert not hasattr(summary, "cache_read_tokens")
+
+
+# --- total_tokens formula tests ---
+
+
+class TestTotalTokensFormula:
+    def test_total_tokens_excludes_cache_read(self, tmp_path):
+        """total_tokens = input + output + cache_creation (no cache_read)."""
+        entries = [
+            _user_entry("Q1", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("A1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=10000,
+                cache_creation=200,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-total", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-total", "/home/user/proj")
+
+        assert data.total_tokens == 100 + 50 + 200  # 350, not 10350
+        assert data.cache_read_tokens == 10000  # still tracked separately
