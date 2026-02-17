@@ -2,13 +2,14 @@
 
 from mcp.server.fastmcp import FastMCP
 
+from ..config.settings import get_tz_offset
 from ..services.claude_session_service import ClaudeSessionService
 
 
 def register(mcp: FastMCP) -> None:
     """Register Claude session tools."""
 
-    service = ClaudeSessionService()
+    service = ClaudeSessionService(tz_offset_hours=get_tz_offset())
 
     @mcp.tool(
         name="list_claude_sessions",

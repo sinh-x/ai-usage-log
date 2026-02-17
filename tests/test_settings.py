@@ -10,6 +10,7 @@ from ai_usage_log.config.settings import (
     get_host,
     get_terminal_session,
     get_today,
+    get_tz_offset,
     get_user,
     get_year_month,
 )
@@ -65,3 +66,22 @@ def test_get_year_month():
 def test_detect_project_non_git(tmp_path):
     result = detect_project(str(tmp_path))
     assert result is None
+
+
+def test_get_tz_offset_from_env():
+    with patch.dict(os.environ, {"AI_USAGE_LOG_TZ_OFFSET": "7"}):
+        assert get_tz_offset() == 7
+
+
+def test_get_tz_offset_negative():
+    with patch.dict(os.environ, {"AI_USAGE_LOG_TZ_OFFSET": "-5"}):
+        assert get_tz_offset() == -5
+
+
+def test_get_tz_offset_auto_detect():
+    """Without env var, should auto-detect from system timezone."""
+    env = {k: v for k, v in os.environ.items() if k != "AI_USAGE_LOG_TZ_OFFSET"}
+    with patch.dict(os.environ, env, clear=True):
+        result = get_tz_offset()
+        assert isinstance(result, int)
+        assert -12 <= result <= 14

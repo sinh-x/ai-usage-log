@@ -425,3 +425,93 @@ class TestReadSession:
         data = svc.read_session("unique-sess")
 
         assert data.session_id == "unique-sess"
+
+
+# --- Timezone conversion tests ---
+
+
+class TestTimezoneConversion:
+    def test_no_offset_passthrough(self, tmp_path):
+        """With tz_offset_hours=0, timestamps stay as-is (UTC)."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("Hi")], timestamp="2026-02-15T10:01:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tz0", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=0)
+        data = svc.read_session("sess-tz0", "/home/user/proj")
+
+        assert data.start_time == "2026-02-15T10:00:00.000Z"
+        assert data.end_time == "2026-02-15T10:01:00.000Z"
+        assert data.conversation[0].timestamp == "2026-02-15T10:00:00.000Z"
+
+    def test_positive_offset(self, tmp_path):
+        """With tz_offset_hours=7, timestamps shift +7h."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("Hi")], timestamp="2026-02-15T10:01:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tz7", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=7)
+        data = svc.read_session("sess-tz7", "/home/user/proj")
+
+        assert data.start_time.startswith("2026-02-15T17:00:00")
+        assert data.end_time.startswith("2026-02-15T17:01:00")
+        assert data.conversation[0].timestamp.startswith("2026-02-15T17:00:00")
+        assert "+0700" in data.start_time
+
+    def test_negative_offset(self, tmp_path):
+        """With tz_offset_hours=-5 (EST), timestamps shift -5h."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("Hi")], timestamp="2026-02-15T10:01:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tz-5", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=-5)
+        data = svc.read_session("sess-tz-5", "/home/user/proj")
+
+        assert data.start_time.startswith("2026-02-15T05:00:00")
+        assert "-0500" in data.start_time
+
+    def test_offset_date_rollover(self, tmp_path):
+        """Offset that crosses midnight should change the date."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T23:00:00.000Z"),
+            _assistant_entry([_text_block("Hi")], timestamp="2026-02-15T23:30:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tz-roll", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=7)
+        data = svc.read_session("sess-tz-roll", "/home/user/proj")
+
+        assert data.start_time.startswith("2026-02-16T06:00:00")
+
+    def test_duration_unaffected_by_offset(self, tmp_path):
+        """Duration should be the same regardless of timezone offset."""
+        entries = [
+            _user_entry("Start", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("Done")], timestamp="2026-02-15T11:05:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tz-dur", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=7)
+        data = svc.read_session("sess-tz-dur", "/home/user/proj")
+
+        assert data.duration_minutes == 65.0
+
+    def test_list_sessions_with_offset(self, tmp_path):
+        """list_sessions should also convert timestamps."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("Hi")], timestamp="2026-02-15T10:01:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-list-tz", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path, tz_offset_hours=7)
+        result = svc.list_sessions(project_path="/home/user/proj")
+
+        assert result.sessions[0].start_time is not None
+        assert result.sessions[0].start_time.startswith("2026-02-15T17:00:00")

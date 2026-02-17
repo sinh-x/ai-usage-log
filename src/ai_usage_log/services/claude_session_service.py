@@ -3,7 +3,7 @@
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..models.schemas import (
@@ -61,11 +61,23 @@ class _ParseState:
 class ClaudeSessionService:
     """Reads and parses Claude Code JSONL session files from ~/.claude/projects/."""
 
-    def __init__(self, claude_projects_dir: Path | None = None) -> None:
+    def __init__(self, claude_projects_dir: Path | None = None, tz_offset_hours: int = 0) -> None:
         if claude_projects_dir is None:
             self.claude_projects_dir = Path.home() / ".claude" / "projects"
         else:
             self.claude_projects_dir = claude_projects_dir
+        self._tz = timezone(timedelta(hours=tz_offset_hours)) if tz_offset_hours else None
+
+    def _to_local(self, ts: str) -> str:
+        """Convert an RFC3339 UTC timestamp to local timezone. Pass-through if no offset configured."""
+        if not self._tz or not ts:
+            return ts
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            local = dt.astimezone(self._tz)
+            return local.strftime("%Y-%m-%dT%H:%M:%S.") + f"{local.microsecond // 1000:03d}" + local.strftime("%z")
+        except (ValueError, TypeError):
+            return ts
 
     @staticmethod
     def encode_project_path(path: str) -> str:
@@ -168,7 +180,7 @@ class ClaudeSessionService:
                     message_count += 1
                     ts = entry.get("timestamp")
                     if ts and not start_time:
-                        start_time = ts
+                        start_time = self._to_local(ts)
                     if not git_branch:
                         git_branch = entry.get("gitBranch")
 
@@ -275,9 +287,10 @@ class ClaudeSessionService:
 
         timestamp = entry.get("timestamp", "")
         if timestamp:
+            local_ts = self._to_local(timestamp)
             if not state.start_time:
-                state.start_time = timestamp
-            state.end_time = timestamp
+                state.start_time = local_ts
+            state.end_time = local_ts
 
         if not state.git_branch:
             state.git_branch = entry.get("gitBranch")
@@ -312,7 +325,7 @@ class ClaudeSessionService:
             # Flush previous turn, start new one
             self._flush_turn(state)
             state.current_turn = _TurnAccumulator(
-                timestamp=entry.get("timestamp", ""),
+                timestamp=self._to_local(entry.get("timestamp", "")),
                 user_prompt=content[:_MAX_PROMPT_LEN],
             )
             return
@@ -332,7 +345,7 @@ class ClaudeSessionService:
                 state.total_user_messages += 1
                 self._flush_turn(state)
                 state.current_turn = _TurnAccumulator(
-                    timestamp=entry.get("timestamp", ""),
+                    timestamp=self._to_local(entry.get("timestamp", "")),
                     user_prompt=combined[:_MAX_PROMPT_LEN],
                 )
 

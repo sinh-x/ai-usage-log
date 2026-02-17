@@ -80,6 +80,23 @@ def detect_project_root(cwd: str) -> str | None:
     return None
 
 
+def get_tz_offset() -> int:
+    """Return timezone offset in hours from UTC.
+
+    Priority: AI_USAGE_LOG_TZ_OFFSET env var > system local timezone.
+    """
+    env_val = os.environ.get("AI_USAGE_LOG_TZ_OFFSET")
+    if env_val is not None:
+        return int(env_val)
+    # Auto-detect from system local timezone
+    import time
+    # time.timezone is seconds WEST of UTC (negative for east), and doesn't account for DST
+    # time.altzone accounts for DST when active
+    is_dst = time.daylight and time.localtime().tm_isdst > 0
+    offset_seconds = -(time.altzone if is_dst else time.timezone)
+    return offset_seconds // 3600
+
+
 def get_today() -> str:
     """Return today's date as YYYY-MM-DD."""
     return datetime.now().strftime("%Y-%m-%d")
