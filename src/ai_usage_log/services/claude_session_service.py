@@ -11,6 +11,7 @@ from ..models.schemas import (
     ClaudeSessionInfo,
     ClaudeSessionList,
     ConversationTurn,
+    TurnTokens,
 )
 
 # Entry types to skip entirely
@@ -34,6 +35,10 @@ class _TurnAccumulator:
     user_prompt: str = ""
     tools_used: list[str] = field(default_factory=list)
     response_texts: list[str] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 @dataclass
@@ -365,10 +370,22 @@ class ClaudeSessionService:
         # Extract token usage
         usage = message.get("usage", {})
         if usage:
-            state.input_tokens += usage.get("input_tokens", 0)
-            state.output_tokens += usage.get("output_tokens", 0)
-            state.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
-            state.cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+            inp = usage.get("input_tokens", 0)
+            out = usage.get("output_tokens", 0)
+            cache_r = usage.get("cache_read_input_tokens", 0)
+            cache_c = usage.get("cache_creation_input_tokens", 0)
+
+            state.input_tokens += inp
+            state.output_tokens += out
+            state.cache_read_tokens += cache_r
+            state.cache_creation_tokens += cache_c
+
+            # Accumulate per-turn tokens
+            if state.current_turn:
+                state.current_turn.input_tokens += inp
+                state.current_turn.output_tokens += out
+                state.current_turn.cache_read_tokens += cache_r
+                state.current_turn.cache_creation_tokens += cache_c
 
         # Process content blocks
         content = message.get("content", [])
@@ -424,12 +441,20 @@ class ClaudeSessionService:
             combined = " ".join(turn.response_texts)
             response_summary = combined[:_MAX_RESPONSE_LEN]
 
+        turn_tokens = TurnTokens(
+            input_tokens=turn.input_tokens,
+            output_tokens=turn.output_tokens,
+            cache_read_tokens=turn.cache_read_tokens,
+            cache_creation_tokens=turn.cache_creation_tokens,
+        )
+
         state.turns.append(
             ConversationTurn(
                 timestamp=turn.timestamp,
                 user_prompt=turn.user_prompt,
                 tools_used=turn.tools_used,
                 response_summary=response_summary,
+                tokens=turn_tokens,
             )
         )
         state.current_turn = None

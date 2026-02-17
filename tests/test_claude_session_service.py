@@ -515,3 +515,157 @@ class TestTimezoneConversion:
 
         assert result.sessions[0].start_time is not None
         assert result.sessions[0].start_time.startswith("2026-02-15T17:00:00")
+
+
+# --- Per-turn token tests ---
+
+
+class TestPerTurnTokens:
+    def test_single_turn_tokens(self, tmp_path):
+        """Each turn should have its own token breakdown."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("Hi there")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=200,
+                cache_creation=300,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-turn-tok", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-turn-tok", "/home/user/proj")
+
+        assert len(data.conversation) == 1
+        tokens = data.conversation[0].tokens
+        assert tokens is not None
+        assert tokens.input_tokens == 100
+        assert tokens.output_tokens == 50
+        assert tokens.cache_read_tokens == 200
+        assert tokens.cache_creation_tokens == 300
+        assert tokens.total == 650
+
+    def test_multi_turn_tokens_independent(self, tmp_path):
+        """Each turn accumulates only its own assistant entries' tokens."""
+        entries = [
+            _user_entry("Q1", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("A1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=0,
+                cache_creation=0,
+            ),
+            _user_entry("Q2", timestamp="2026-02-15T10:02:00.000Z"),
+            _assistant_entry(
+                [_text_block("A2")],
+                timestamp="2026-02-15T10:03:00.000Z",
+                input_tokens=200,
+                output_tokens=75,
+                cache_read=100,
+                cache_creation=50,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-multi-tok", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-multi-tok", "/home/user/proj")
+
+        assert len(data.conversation) == 2
+
+        t1 = data.conversation[0].tokens
+        assert t1.input_tokens == 100
+        assert t1.output_tokens == 50
+        assert t1.cache_read_tokens == 0
+        assert t1.cache_creation_tokens == 0
+        assert t1.total == 150
+
+        t2 = data.conversation[1].tokens
+        assert t2.input_tokens == 200
+        assert t2.output_tokens == 75
+        assert t2.cache_read_tokens == 100
+        assert t2.cache_creation_tokens == 50
+        assert t2.total == 425
+
+    def test_multiple_assistant_entries_per_turn(self, tmp_path):
+        """Multiple assistant entries within a single turn should sum tokens."""
+        entries = [
+            _user_entry("Do something complex", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_tool_use_block("Read", {"file_path": "/tmp/a.py"})],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=30,
+            ),
+            # Tool result comes back as user entry (tool_result only — filtered)
+            _user_entry(
+                [_tool_result_block("file contents")],
+                timestamp="2026-02-15T10:01:05.000Z",
+            ),
+            _assistant_entry(
+                [_text_block("Here's what I found")],
+                timestamp="2026-02-15T10:01:10.000Z",
+                input_tokens=150,
+                output_tokens=60,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-multi-asst", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-multi-asst", "/home/user/proj")
+
+        # Should be a single turn (tool_result user entry doesn't start new turn)
+        assert len(data.conversation) == 1
+        tokens = data.conversation[0].tokens
+        assert tokens.input_tokens == 250  # 100 + 150
+        assert tokens.output_tokens == 90  # 30 + 60
+
+    def test_turn_tokens_sum_equals_session_total(self, tmp_path):
+        """Sum of per-turn tokens should equal session-level totals."""
+        entries = [
+            _user_entry("Q1", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("A1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read=10,
+                cache_creation=20,
+            ),
+            _user_entry("Q2", timestamp="2026-02-15T10:02:00.000Z"),
+            _assistant_entry(
+                [_text_block("A2")],
+                timestamp="2026-02-15T10:03:00.000Z",
+                input_tokens=200,
+                output_tokens=75,
+                cache_read=30,
+                cache_creation=40,
+            ),
+            _user_entry("Q3", timestamp="2026-02-15T10:04:00.000Z"),
+            _assistant_entry(
+                [_text_block("A3")],
+                timestamp="2026-02-15T10:05:00.000Z",
+                input_tokens=300,
+                output_tokens=100,
+                cache_read=50,
+                cache_creation=60,
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tok-sum", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        data = svc.read_session("sess-tok-sum", "/home/user/proj")
+
+        turn_input = sum(t.tokens.input_tokens for t in data.conversation)
+        turn_output = sum(t.tokens.output_tokens for t in data.conversation)
+        turn_cache_r = sum(t.tokens.cache_read_tokens for t in data.conversation)
+        turn_cache_c = sum(t.tokens.cache_creation_tokens for t in data.conversation)
+
+        assert turn_input == data.input_tokens
+        assert turn_output == data.output_tokens
+        assert turn_cache_r == data.cache_read_tokens
+        assert turn_cache_c == data.cache_creation_tokens
