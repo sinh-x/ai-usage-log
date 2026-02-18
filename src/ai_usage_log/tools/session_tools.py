@@ -16,6 +16,7 @@ from ..config.settings import (
 )
 from ..context import get_context
 from ..models.schemas import PrepareSessionResult, SaveBundleResult, SessionContext
+from ..utils.content import resolve_content
 
 
 def register(mcp: FastMCP) -> None:
@@ -53,7 +54,12 @@ def register(mcp: FastMCP) -> None:
         },
     )
     async def create_session(
-        year: str, month: str, date: str, agent: str, content: str
+        year: str,
+        month: str,
+        date: str,
+        agent: str,
+        content: str = "",
+        content_path: str = "",
     ) -> str:
         """Create a new session log file. Returns the path, hash, and filename.
 
@@ -63,8 +69,10 @@ def register(mcp: FastMCP) -> None:
             date: Date string YYYY-MM-DD.
             agent: Agent name (e.g. 'claude-code').
             content: Full markdown content for the session log.
+            content_path: Path to a file containing the markdown content (alternative to inline content).
         """
         ctx = get_context()
+        content = resolve_content(content, content_path)
         result = ctx.sessions.create_session(year, month, date, agent, content)
         return result.model_dump_json(indent=2)
 
@@ -79,7 +87,11 @@ def register(mcp: FastMCP) -> None:
         },
     )
     async def update_session(
-        session_hash: str, content: str, year: str = "", month: str = ""
+        session_hash: str,
+        content: str = "",
+        year: str = "",
+        month: str = "",
+        content_path: str = "",
     ) -> str:
         """Update an existing session log by its hash.
 
@@ -88,8 +100,10 @@ def register(mcp: FastMCP) -> None:
             content: Full updated markdown content.
             year: Optional year to narrow search.
             month: Optional month to narrow search.
+            content_path: Path to a file containing the markdown content (alternative to inline content).
         """
         ctx = get_context()
+        content = resolve_content(content, content_path)
         try:
             result = ctx.sessions.update_session(
                 session_hash,
@@ -227,12 +241,13 @@ def register(mcp: FastMCP) -> None:
         month: str,
         date: str,
         agent: str,
-        content: str,
+        content: str = "",
         tracking_updates: dict[str, str] | None = None,
         project_root: str = "",
         user: str = "",
         host: str = "",
         project_ref_content: str = "",
+        content_path: str = "",
     ) -> str:
         """Batch save: create session + update tracking + save project ref in one call.
 
@@ -250,8 +265,10 @@ def register(mcp: FastMCP) -> None:
             user: Username for project ref (required if project_root set).
             host: Hostname for project ref (required if project_root set).
             project_ref_content: Markdown content for project ref file.
+            content_path: Path to a file containing the session markdown (alternative to inline content).
         """
         ctx = get_context()
+        content = resolve_content(content, content_path)
 
         # 1. Create session
         session_result = ctx.sessions.create_session(year, month, date, agent, content)

@@ -1,11 +1,11 @@
 """Tool: create_daily_summary."""
 
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from ..context import get_context
 from ..models.schemas import DailySummaryResult
+from ..utils.content import resolve_content
 
 
 def register(mcp: FastMCP) -> None:
@@ -22,7 +22,7 @@ def register(mcp: FastMCP) -> None:
         },
     )
     async def create_daily_summary(
-        year: str, month: str, date: str, content: str
+        year: str, month: str, date: str, content: str = "", content_path: str = ""
     ) -> str:
         """Write a daily summary file.
 
@@ -31,7 +31,9 @@ def register(mcp: FastMCP) -> None:
             month: Two-digit month.
             date: Date string YYYY-MM-DD.
             content: Full markdown content for the daily summary.
+            content_path: Path to a file containing the markdown content (alternative to inline content).
         """
+        content = resolve_content(content, content_path)
         ctx = get_context()
         daily_dir = ctx.base_path / "daily" / year / month
         daily_dir.mkdir(parents=True, exist_ok=True)
