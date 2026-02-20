@@ -224,6 +224,10 @@ class ClaudeSessionService:
             is_current=False,
         )
 
+    def find_session_file(self, session_id: str, project_path: str = "") -> Path | None:
+        """Find a JSONL session file by ID (public wrapper)."""
+        return self._find_session_file(session_id, project_path)
+
     def read_session(self, session_id: str, project_path: str = "") -> ClaudeSessionData:
         """Parse a full JSONL session and return structured data."""
         jsonl_path = self._find_session_file(session_id, project_path)

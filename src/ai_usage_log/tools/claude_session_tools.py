@@ -2,15 +2,12 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from ..config.settings import get_tz_offset
+from ..context import get_context
 from ..models.schemas import ClaudeSessionsBatchResult
-from ..services.claude_session_service import ClaudeSessionService
 
 
 def register(mcp: FastMCP) -> None:
     """Register Claude session tools."""
-
-    service = ClaudeSessionService(tz_offset_hours=get_tz_offset())
 
     @mcp.tool(
         name="list_claude_sessions",
@@ -29,6 +26,7 @@ def register(mcp: FastMCP) -> None:
             project_path: Absolute project path to filter (e.g. /home/user/myproject). Empty for all.
             limit: Maximum number of sessions to return (default 20).
         """
+        service = get_context().claude_sessions
         result = service.list_sessions(project_path=project_path, limit=limit)
         return result.model_dump_json(indent=2)
 
@@ -49,6 +47,7 @@ def register(mcp: FastMCP) -> None:
             session_id: The session UUID (filename without .jsonl extension).
             project_path: Absolute project path to narrow search. Empty to scan all projects.
         """
+        service = get_context().claude_sessions
         result = service.read_session(session_id=session_id, project_path=project_path)
         return result.model_dump_json(indent=2)
 
@@ -71,6 +70,7 @@ def register(mcp: FastMCP) -> None:
             session_ids: List of session UUIDs to read.
             project_path: Absolute project path to narrow search. Empty to scan all projects.
         """
+        service = get_context().claude_sessions
         summaries = []
         for sid in session_ids:
             data = service.read_session(session_id=sid, project_path=project_path)

@@ -10,6 +10,7 @@ from ..models.schemas import (
     SessionList,
     SessionResult,
 )
+from ..utils.filename import parse_session_filename
 
 
 class SessionService:
@@ -29,17 +30,7 @@ class SessionService:
     @staticmethod
     def _parse_session_filename(filename: str) -> tuple[str, str, str] | None:
         """Parse YYYY-MM-DD-<hash>-<agent>.md -> (date, hash, agent) or None."""
-        if not filename.endswith(".md"):
-            return None
-        stem = filename[:-3]
-        parts = stem.split("-")
-        # Minimum: YYYY-MM-DD-hash-agent = 5 parts
-        if len(parts) < 5:
-            return None
-        date = f"{parts[0]}-{parts[1]}-{parts[2]}"
-        session_hash = parts[3]
-        agent = "-".join(parts[4:])
-        return date, session_hash, agent
+        return parse_session_filename(filename)
 
     def create_session(
         self, year: str, month: str, date: str, agent: str, content: str

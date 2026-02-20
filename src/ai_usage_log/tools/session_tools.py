@@ -218,11 +218,15 @@ def register(mcp: FastMCP) -> None:
         # 4. Get stats
         stats = ctx.tracking.get_stats()
 
+        # 5. Compute aggregate stats from session files
+        computed_stats = ctx.stats.compute_stats()
+
         result = PrepareSessionResult(
             context=context,
             structure=structure,
             previous_session=previous,
             stats=stats,
+            computed_stats=computed_stats,
         )
         return result.model_dump_json(indent=2)
 
@@ -248,11 +252,15 @@ def register(mcp: FastMCP) -> None:
         host: str = "",
         project_ref_content: str = "",
         content_path: str = "",
+        jsonl_session_ids: list[str] | None = None,
     ) -> str:
         """Batch save: create session + update tracking + save project ref in one call.
 
         Combines create_session + update_tracking + save_project_ref.
         All original tools remain available individually.
+
+        When jsonl_session_ids are provided, also extracts and caches JSONL stats
+        for each referenced session to the statistics/ directory.
 
         Args:
             year: Four-digit year (e.g. '2026').
@@ -266,6 +274,7 @@ def register(mcp: FastMCP) -> None:
             host: Hostname for project ref (required if project_root set).
             project_ref_content: Markdown content for project ref file.
             content_path: Path to a file containing the session markdown (alternative to inline content).
+            jsonl_session_ids: Optional list of JSONL session UUIDs to extract+cache stats for.
         """
         ctx = get_context()
         content = resolve_content(content, content_path)
@@ -285,9 +294,16 @@ def register(mcp: FastMCP) -> None:
                 project_root, user, host, project_ref_content
             )
 
+        # 4. Extract+cache JSONL stats (optional)
+        linked_ids = None
+        if jsonl_session_ids:
+            extracted = ctx.jsonl_stats.extract_and_link(jsonl_session_ids)
+            linked_ids = [s.session_id for s in extracted]
+
         result = SaveBundleResult(
             session=session_result,
             tracking=tracking_result,
             project_ref=project_ref_result,
+            jsonl_session_ids=linked_ids,
         )
         return result.model_dump_json(indent=2)

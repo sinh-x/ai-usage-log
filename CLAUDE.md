@@ -14,11 +14,14 @@ src/ai_usage_log/
 │   ├── structure_service.py   # Dir tree + tracking file init
 │   ├── session_service.py     # Session CRUD
 │   ├── tracking_service.py    # Tracking file updates
-│   └── project_service.py     # Project-level ai-sessions refs
-├── tools/                 # MCP tool definitions (5 modules, 10 tools)
+│   ├── project_service.py     # Project-level ai-sessions refs
+│   └── jsonl_stats_service.py # JSONL stats extraction + disk cache
+├── tools/                 # MCP tool definitions (7 modules, 13 tools)
 │   ├── context_tools.py       # get_session_context
 │   ├── session_tools.py       # init_structure, create/update/list/previous
 │   ├── tracking_tools.py      # update_tracking, get_stats
+│   ├── stats_tools.py         # compute_stats
+│   ├── jsonl_stats_tools.py   # extract_session_stats, get_daily_jsonl_stats
 │   ├── project_tools.py       # save_project_ref
 │   └── daily_tools.py         # create_daily_summary
 └── templates/file_templates.py  # Tracking file init templates
@@ -41,7 +44,7 @@ Single env var: `AI_USAGE_LOG_PATH` (default: `~/Documents/ai-usage`)
 - **Idempotent**: `init_structure` is safe to call multiple times.
 - **Sync I/O**: Local SSD operations via `Path` methods.
 
-## 10 MCP Tools
+## 13 MCP Tools
 | # | Tool | Purpose |
 |---|------|---------|
 | 1 | `get_session_context` | Detect user, host, terminal, project, cwd, date |
@@ -53,4 +56,7 @@ Single env var: `AI_USAGE_LOG_PATH` (default: `~/Documents/ai-usage`)
 | 7 | `save_project_ref` | Write project .claude/ai-sessions ref |
 | 8 | `update_tracking` | Batch update learning/skills/verification/quiz/stats |
 | 9 | `get_stats` | Read statistics.md |
-| 10 | `create_daily_summary` | Write daily summary file |
+| 10 | `compute_stats` | Aggregate stats from session files (read-only) |
+| 11 | `extract_session_stats` | Parse JSONL + cache stats to statistics/ dir |
+| 12 | `get_daily_jsonl_stats` | Aggregate cached JSONL stats for date range |
+| 13 | `create_daily_summary` | Write daily summary file |

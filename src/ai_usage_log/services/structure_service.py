@@ -24,6 +24,7 @@ class StructureService:
             self.base_path / "daily" / year / month,
             self.base_path / "insights" / "weekly",
             self.base_path / "insights" / "monthly",
+            self.base_path / "statistics",
         ]
 
         for d in dirs:

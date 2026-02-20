@@ -81,12 +81,99 @@ class DailySummaryResult(BaseModel):
     created: bool
 
 
+class SessionHeaderMeta(BaseModel):
+    """Metadata parsed from a session file's blockquote header."""
+    duration: str | None = None
+    duration_minutes: float | None = None
+    project: str | None = None
+    agent_detail: str | None = None
+
+
+class MonthlyStats(BaseModel):
+    """Aggregate stats for a single month."""
+    month: str
+    session_count: int
+    sessions_by_agent: dict[str, int]
+    sessions_by_date: dict[str, int]
+    active_days: int
+    projects: list[str]
+
+
+class AgentStats(BaseModel):
+    """Aggregate stats for a single agent."""
+    agent: str
+    session_count: int
+    dates: list[str]
+
+
+class ComputedStats(BaseModel):
+    """Aggregate statistics computed from session files on disk."""
+    total_sessions: int
+    total_agents: int
+    total_active_days: int
+    date_range: str
+    sessions_by_agent: dict[str, int]
+    by_month: list[MonthlyStats]
+    by_agent: list[AgentStats]
+    total_duration_minutes: float | None = None
+    projects: list[str] | None = None
+
+
+class CachedSessionStats(BaseModel):
+    """Per-session stats extracted from JSONL, saved to statistics/ dir."""
+    session_id: str
+    project_name: str
+    project_path: str
+    git_branch: str | None
+    model: str | None
+    start_time: str
+    end_time: str
+    duration_minutes: float
+    total_user_messages: int
+    total_assistant_messages: int
+    total_tool_calls: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    subagent_input_tokens: int
+    subagent_output_tokens: int
+    subagent_cache_creation_tokens: int
+    tools_summary: dict[str, int]
+    jsonl_mtime: float
+    jsonl_path: str
+
+
+class DailyAggregate(BaseModel):
+    """Aggregated stats for a date or date range."""
+    date_range: str
+    total_sessions: int
+    total_duration_minutes: float
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_creation_tokens: int
+    total_cache_read_tokens: int
+    total_subagent_input_tokens: int
+    total_subagent_output_tokens: int
+    total_subagent_cache_creation_tokens: int
+    total_tool_calls: int
+    total_user_messages: int
+    total_assistant_messages: int
+    tools_histogram: dict[str, int]
+    model_distribution: dict[str, int]
+    projects: list[str]
+    sessions: list[CachedSessionStats]
+    cached_count: int
+    parsed_count: int
+
+
 class PrepareSessionResult(BaseModel):
     """Result of prepare_session batch tool."""
     context: SessionContext
     structure: StructureResult
     previous_session: PreviousSession | None
     stats: StatsResult
+    computed_stats: ComputedStats | None = None
 
 
 class SaveBundleResult(BaseModel):
@@ -94,6 +181,7 @@ class SaveBundleResult(BaseModel):
     session: SessionResult
     tracking: TrackingResult | None
     project_ref: ProjectRefResult | None
+    jsonl_session_ids: list[str] | None = None
 
 
 # --- Claude JSONL session models ---

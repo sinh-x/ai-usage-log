@@ -2,7 +2,7 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from .tools import claude_session_tools, context_tools, daily_tools, project_tools, session_tools, tracking_tools
+from .tools import claude_session_tools, context_tools, daily_tools, jsonl_stats_tools, project_tools, session_tools, stats_tools, tracking_tools
 
 mcp = FastMCP(
     "ai_usage_log",
@@ -22,7 +22,7 @@ def workflow_docs() -> str:
     return """\
 # ai-usage-log — Standard Workflow
 
-## Tools (6 active)
+## Tools (9 active)
 
 | Tool                   | Purpose                                          | Step             |
 | ---------------------- | ------------------------------------------------ | ---------------- |
@@ -31,6 +31,9 @@ def workflow_docs() -> str:
 | save_session_bundle    | Create session + tracking + project ref (3-in-1) | Step 4           |
 | update_session         | Update existing session by hash                  | Step 4 (update)  |
 | list_sessions          | List sessions by date/month/count                | On demand        |
+| compute_stats          | Aggregate stats from session files (read-only)   | On demand        |
+| extract_session_stats  | Parse JSONL + cache stats to statistics/ dir     | On demand        |
+| get_daily_jsonl_stats  | Aggregate cached JSONL stats for date range      | On demand        |
 | create_daily_summary   | Write daily summary file                         | Daily mode       |
 
 ## Standard Flow (2–3 MCP calls)
@@ -55,6 +58,8 @@ claude_session_tools.register(mcp)
 context_tools.register(mcp)
 session_tools.register(mcp)
 tracking_tools.register(mcp)
+stats_tools.register(mcp)
+jsonl_stats_tools.register(mcp)
 project_tools.register(mcp)
 daily_tools.register(mcp)
 
