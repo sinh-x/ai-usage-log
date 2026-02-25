@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ai-usage-log"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for AI session logging — tracks learnings, verifications, and growth across AI agents"
 authors = ["Sinh Nguyen <sinh@sinhn.com>"]
 readme = "README.md"
