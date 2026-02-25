@@ -41,6 +41,21 @@ poetry run pytest                # tests
 ## Config
 Single env var: `AI_USAGE_LOG_PATH` (default: `~/Documents/ai-usage`)
 
+## Branch Strategy
+- **main**: Production releases — auto-versioned via CI on merge
+- **develop**: Integration branch — feature PRs merge here
+- **feat/**, **fix/**: Feature/bugfix branches off `develop`
+- **Never commit directly to main or develop** — always use PRs
+- **No version bumps in feature branches** — CI handles versioning on main
+- See `.claude/branch-strategy.yaml` for machine-readable config
+
+## Version Control
+- **Scheme**: Semantic Versioning (major.minor.patch)
+- **Source of truth**: `src/ai_usage_log/__init__.py`
+- **Bump tool**: `python tool/bump_version.py [patch|minor|major|X.Y.Z]`
+- **Also updates**: `pyproject.toml`, `flake.nix`, `CHANGELOG.md`
+- **CI**: GitHub Actions — tests on push to main/develop, auto-release on main
+
 ## Design Principles
 - **Content-passing**: Agent assembles markdown, MCP writes it. Server doesn't parse session content.
 - **Stateless**: No "current session" in server. Agent tracks hash and passes it.

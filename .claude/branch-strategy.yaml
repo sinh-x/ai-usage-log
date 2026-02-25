@@ -1,0 +1,43 @@
+# Branch Strategy for ai-usage-log
+# Adapted from avodah's main/develop/feat pattern
+
+branches:
+  production: main
+  development: develop
+  feature_prefix: feat/
+  bugfix_prefix: fix/
+  release_prefix: release/
+
+rules:
+  # Never commit directly to main or develop
+  protected: [main, develop]
+  # Feature branches merge to develop via PR
+  feature_target: develop
+  # develop merges to main for releases
+  release_target: main
+
+naming:
+  # feat/<issue-number>-short-description or feat/short-description
+  feature: "feat/{description}"
+  bugfix: "fix/{description}"
+  release: "release/v{version}"
+
+versioning:
+  scheme: semver
+  source_of_truth: src/ai_usage_log/__init__.py
+  also_update:
+    - pyproject.toml
+    - flake.nix
+    - CHANGELOG.md
+  bump_tool: "python tool/bump_version.py [patch|minor|major|X.Y.Z]"
+
+workflow:
+  # 1. Create feature branch from develop
+  # 2. Work on feature, commit with conventional commits
+  # 3. PR to develop — CI runs tests
+  # 4. Merge to develop — beta tag auto-created
+  # 5. When ready to release, PR develop → main
+  # 6. Merge to main — version bump + GitHub Release auto-created
+  conventional_commits: true
+  auto_version_bump: true
+  auto_changelog: true
