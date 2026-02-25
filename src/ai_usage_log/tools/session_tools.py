@@ -221,12 +221,21 @@ def register(mcp: FastMCP) -> None:
         # 5. Compute aggregate stats from session files
         computed_stats = ctx.stats.compute_stats()
 
+        # 6. Auto-detect current session timeline (for accurate timestamps in logs)
+        current_timeline = None
+        if cwd:
+            try:
+                current_timeline = ctx.claude_sessions.get_current_timeline(cwd)
+            except Exception:
+                pass  # Non-critical — agent can still call get_session_timeline manually
+
         result = PrepareSessionResult(
             context=context,
             structure=structure,
             previous_session=previous,
             stats=stats,
             computed_stats=computed_stats,
+            current_session_timeline=current_timeline,
         )
         return result.model_dump_json(indent=2)
 

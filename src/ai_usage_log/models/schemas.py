@@ -174,6 +174,7 @@ class PrepareSessionResult(BaseModel):
     previous_session: PreviousSession | None
     stats: StatsResult
     computed_stats: ComputedStats | None = None
+    current_session_timeline: SessionTimeline | None = None
 
 
 class SaveBundleResult(BaseModel):
@@ -293,6 +294,28 @@ class ClaudeSessionsBatchResult(BaseModel):
     """Result of batch reading multiple Claude sessions."""
     sessions: list[ClaudeSessionSummary]
     count: int
+
+
+class TimelineEntry(BaseModel):
+    """A single timestamped action in a session timeline."""
+    timestamp: str
+    user_prompt: str
+    tools_used: list[str] = []
+    files_modified: list[str] = []
+    is_compaction: bool = False
+
+
+class SessionTimeline(BaseModel):
+    """Lightweight timeline extracted from a JSONL session for use in session logs.
+
+    Provides verifiable timestamps that agents MUST use instead of fabricating times.
+    """
+    session_id: str
+    project_name: str
+    start_time: str
+    end_time: str
+    duration_minutes: float
+    entries: list[TimelineEntry]
 
 
 class ClaudeSessionInfo(BaseModel):

@@ -1309,3 +1309,143 @@ class TestTotalTokensFormula:
 
         assert data.total_tokens == 100 + 50 + 200  # 350, not 10350
         assert data.cache_read_tokens == 10000  # still tracked separately
+
+
+# --- Timeline extraction tests ---
+
+
+class TestGetTimeline:
+    def test_timeline_basic(self, tmp_path):
+        """get_timeline returns timestamps and user prompts for each turn."""
+        entries = [
+            _user_entry("First question", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("Answer 1")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+            _user_entry("Second question", timestamp="2026-02-15T10:05:00.000Z"),
+            _assistant_entry(
+                [
+                    _tool_use_block("Read", {"file_path": "/tmp/a.py"}),
+                    _text_block("Answer 2"),
+                ],
+                timestamp="2026-02-15T10:06:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tl", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_timeline("sess-tl", "/home/user/proj")
+
+        assert timeline.session_id == "sess-tl"
+        assert timeline.project_name == "proj"
+        assert len(timeline.entries) == 2
+        assert timeline.entries[0].timestamp == "2026-02-15T10:00:00.000Z"
+        assert timeline.entries[0].user_prompt == "First question"
+        assert timeline.entries[0].tools_used == []
+        assert timeline.entries[1].timestamp == "2026-02-15T10:05:00.000Z"
+        assert timeline.entries[1].user_prompt == "Second question"
+        assert "Read" in timeline.entries[1].tools_used
+        assert timeline.duration_minutes > 0
+
+    def test_timeline_with_files_modified(self, tmp_path):
+        """Timeline entries include files_modified from Write/Edit tools."""
+        entries = [
+            _user_entry("Edit stuff", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [
+                    _tool_use_block("Write", {"file_path": "/home/user/new.py"}),
+                    _tool_use_block("Edit", {"file_path": "/home/user/old.py"}),
+                ],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tl-files", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_timeline("sess-tl-files", "/home/user/proj")
+
+        assert "/home/user/new.py" in timeline.entries[0].files_modified
+        assert "/home/user/old.py" in timeline.entries[0].files_modified
+
+    def test_timeline_not_found(self, tmp_path):
+        """get_timeline raises FileNotFoundError for missing session."""
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        with pytest.raises(FileNotFoundError):
+            svc.get_timeline("nonexistent", "/home/user/proj")
+
+    def test_get_current_timeline(self, tmp_path):
+        """get_current_timeline returns timeline for the most recent session."""
+        entries = [
+            _user_entry("Hello", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("Hi")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-current", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_current_timeline("/home/user/proj")
+
+        assert timeline is not None
+        assert timeline.session_id == "sess-current"
+        assert len(timeline.entries) == 1
+
+    def test_get_current_timeline_no_sessions(self, tmp_path):
+        """get_current_timeline returns None when no sessions exist."""
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_current_timeline("/home/user/nonexistent")
+        assert timeline is None
+
+    def test_timeline_with_compaction(self, tmp_path):
+        """Timeline includes compaction markers between context windows."""
+        entries = [
+            _user_entry("Before compaction", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("Pre-compact answer")],
+                timestamp="2026-02-15T10:01:00.000Z",
+            ),
+            # Compaction event (no timestamp, just summary + leafUuid)
+            {"type": "summary", "summary": "Session so far...", "leafUuid": "abc-123"},
+            _user_entry("After compaction", timestamp="2026-02-15T11:00:00.000Z"),
+            _assistant_entry(
+                [_text_block("Post-compact answer")],
+                timestamp="2026-02-15T11:01:00.000Z",
+            ),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tl-compact", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_timeline("sess-tl-compact", "/home/user/proj")
+
+        # 2 real turns + 1 compaction marker = 3 entries
+        assert len(timeline.entries) == 3
+        assert timeline.entries[0].user_prompt == "Before compaction"
+        assert timeline.entries[0].is_compaction is False
+        assert timeline.entries[1].user_prompt == "[context compacted]"
+        assert timeline.entries[1].is_compaction is True
+        assert timeline.entries[2].user_prompt == "After compaction"
+        assert timeline.entries[2].is_compaction is False
+
+    def test_timeline_multiple_compactions(self, tmp_path):
+        """Timeline handles multiple compaction events."""
+        entries = [
+            _user_entry("Turn 1", timestamp="2026-02-15T10:00:00.000Z"),
+            _assistant_entry([_text_block("A1")], timestamp="2026-02-15T10:01:00.000Z"),
+            {"type": "summary", "summary": "First compact", "leafUuid": "id1"},
+            _user_entry("Turn 2", timestamp="2026-02-15T11:00:00.000Z"),
+            _assistant_entry([_text_block("A2")], timestamp="2026-02-15T11:01:00.000Z"),
+            {"type": "summary", "summary": "Second compact", "leafUuid": "id2"},
+            _user_entry("Turn 3", timestamp="2026-02-15T12:00:00.000Z"),
+            _assistant_entry([_text_block("A3")], timestamp="2026-02-15T12:01:00.000Z"),
+        ]
+        _setup_project(tmp_path, "/home/user/proj", "sess-tl-multi-c", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        timeline = svc.get_timeline("sess-tl-multi-c", "/home/user/proj")
+
+        # 3 real turns + 2 compaction markers = 5 entries
+        assert len(timeline.entries) == 5
+        assert timeline.entries[1].is_compaction is True
+        assert timeline.entries[3].is_compaction is True

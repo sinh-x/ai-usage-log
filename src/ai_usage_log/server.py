@@ -22,11 +22,12 @@ def workflow_docs() -> str:
     return """\
 # ai-usage-log — Standard Workflow
 
-## Tools (9 active)
+## Tools (10 active)
 
 | Tool                   | Purpose                                          | Step             |
 | ---------------------- | ------------------------------------------------ | ---------------- |
-| prepare_session        | Context + dirs + previous + stats (4-in-1)       | Step 0           |
+| prepare_session        | Context + dirs + previous + stats + timeline     | Step 0           |
+| get_session_timeline   | Extract timestamps + actions from JSONL session  | On demand        |
 | read_claude_sessions   | Batch-read JSONL sessions → trimmed summaries    | Step 2 (optional)|
 | save_session_bundle    | Create session + tracking + project ref (3-in-1) | Step 4           |
 | update_session         | Update existing session by hash                  | Step 4 (update)  |
@@ -40,12 +41,16 @@ def workflow_docs() -> str:
 
 | Step | MCP Tool               | Purpose                                    |
 | ---- | ---------------------- | ------------------------------------------ |
-| 0    | prepare_session        | Context + dirs + previous + stats (1 call) |
+| 0    | prepare_session        | Context + dirs + previous + stats + timeline (1 call) |
 | 1    | (no MCP)               | Gather session info from user              |
 | 2    | read_claude_sessions   | (optional) Enrich with raw session data    |
-| 3    | (no MCP)               | Generate markdown + Preview & Confirm      |
+| 3    | (no MCP)               | Generate markdown using timeline timestamps |
 | 4    | save_session_bundle    | Save session + tracking + project ref      |
 | 5    | (no MCP)               | Confirm to user                            |
+
+NOTE: prepare_session now auto-includes `current_session_timeline` with verifiable
+timestamps from the JSONL session. Use these timestamps in the session log timeline —
+NEVER fabricate times. If timeline is null, use get_session_timeline with the session ID.
 
 ## Config
 

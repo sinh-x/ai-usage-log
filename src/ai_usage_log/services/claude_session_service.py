@@ -11,6 +11,8 @@ from ..models.schemas import (
     ClaudeSessionInfo,
     ClaudeSessionList,
     ConversationTurn,
+    SessionTimeline,
+    TimelineEntry,
     TurnCommand,
     TurnTokens,
 )
@@ -86,6 +88,8 @@ class _ParseState:
     seen_subagent_msg_ids: dict[str, dict] = field(default_factory=dict)
     # Maps task tool_use_id → turn index for attributing sub-agent tokens
     task_tool_use_ids: dict[str, int] = field(default_factory=dict)
+    # Compaction events: list of turn indices after which a compaction occurred
+    compaction_after_turn: list[int] = field(default_factory=list)
 
 
 class ClaudeSessionService:
@@ -296,6 +300,97 @@ class ClaudeSessionService:
             commands_run=state.commands_run,
         )
 
+    def get_timeline(self, session_id: str, project_path: str = "") -> SessionTimeline:
+        """Extract a lightweight timeline from a JSONL session.
+
+        Returns only timestamps, user prompts, tools used, and files modified —
+        the minimum data needed for writing accurate session log timelines.
+        Compaction boundaries are marked with is_compaction=True entries.
+        """
+        # Parse with compaction tracking
+        jsonl_path = self._find_session_file(session_id, project_path)
+        if jsonl_path is None:
+            raise FileNotFoundError(f"No JSONL session found: {session_id}")
+
+        state = _ParseState()
+        encoded_name = jsonl_path.parent.name
+        project_name = self._decode_project_name(encoded_name)
+
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                self._process_entry(entry, state)
+
+        self._flush_turn(state)
+
+        # Build compaction set for O(1) lookup
+        compaction_set = set(state.compaction_after_turn)
+
+        # Compute duration
+        duration = 0.0
+        if state.start_time and state.end_time:
+            try:
+                t0 = datetime.fromisoformat(state.start_time.replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(state.end_time.replace("Z", "+00:00"))
+                duration = (t1 - t0).total_seconds() / 60.0
+            except (ValueError, TypeError):
+                pass
+
+        entries: list[TimelineEntry] = []
+        for i, turn in enumerate(state.turns):
+            if not turn.timestamp:
+                continue
+            entries.append(
+                TimelineEntry(
+                    timestamp=turn.timestamp,
+                    user_prompt=turn.user_prompt,
+                    tools_used=turn.tools_used,
+                    files_modified=turn.files_modified,
+                )
+            )
+            # Insert compaction marker after this turn if compaction occurred
+            if i in compaction_set:
+                entries.append(
+                    TimelineEntry(
+                        timestamp=turn.timestamp,
+                        user_prompt="[context compacted]",
+                        is_compaction=True,
+                    )
+                )
+
+        return SessionTimeline(
+            session_id=session_id,
+            project_name=project_name,
+            start_time=state.start_time,
+            end_time=state.end_time,
+            duration_minutes=round(duration, 1),
+            entries=entries,
+        )
+
+    def get_current_timeline(self, project_path: str) -> SessionTimeline | None:
+        """Get the timeline for the most recent (current) session of a project.
+
+        Returns None if no sessions found for the project.
+        """
+        sessions = self.list_sessions(project_path=project_path, limit=1)
+        if not sessions.sessions:
+            return None
+        current = sessions.sessions[0]
+        if not current.is_current:
+            return None
+        try:
+            return self.get_timeline(
+                session_id=current.session_id, project_path=project_path
+            )
+        except FileNotFoundError:
+            return None
+
     def _find_session_file(self, session_id: str, project_path: str) -> Path | None:
         """Find a JSONL session file by ID."""
         if project_path:
@@ -338,6 +433,10 @@ class ClaudeSessionService:
             self._process_assistant_entry(entry, state)
         elif entry_type == "progress":
             self._process_progress_entry(entry, state)
+        elif entry_type == "summary":
+            # Context compaction event — record which turn it occurred after
+            self._flush_turn(state)
+            state.compaction_after_turn.append(len(state.turns) - 1)
 
     def _process_user_entry(self, entry: dict, state: _ParseState) -> None:
         """Process a user-type JSONL entry."""

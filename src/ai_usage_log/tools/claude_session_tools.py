@@ -52,6 +52,33 @@ def register(mcp: FastMCP) -> None:
         return result.model_dump_json(indent=2)
 
     @mcp.tool(
+        name="get_session_timeline",
+        annotations={
+            "title": "Get Session Timeline",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    async def get_session_timeline(
+        session_id: str, project_path: str = ""
+    ) -> str:
+        """Extract a lightweight timeline from a JSONL session for use in session logs.
+
+        Returns only timestamps, user prompts, tools used, and files modified —
+        the minimum needed for writing accurate session log timelines without
+        fabricating timestamps.
+
+        Args:
+            session_id: The session UUID (filename without .jsonl extension).
+            project_path: Absolute project path to narrow search. Empty to scan all projects.
+        """
+        service = get_context().claude_sessions
+        result = service.get_timeline(session_id=session_id, project_path=project_path)
+        return result.model_dump_json(indent=2)
+
+    @mcp.tool(
         name="read_claude_sessions",
         annotations={
             "title": "Read Claude Sessions (Batch)",
