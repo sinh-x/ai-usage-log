@@ -4,6 +4,7 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
+from .. import __version__
 from ..config.settings import (
     detect_project,
     detect_project_root,
@@ -206,6 +207,7 @@ def register(mcp: FastMCP) -> None:
             time=get_now(),
             year=year,
             month=month,
+            server_version=__version__,
         )
 
         # 2. Init directory structure

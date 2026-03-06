@@ -469,6 +469,39 @@ class TestReadSession:
 
         assert data.session_id == "unique-sess"
 
+    def test_find_session_fallback_scan_on_wrong_project_path(self, tmp_path):
+        """When project_path doesn't resolve, should fall through to scan-all."""
+        entries = [_user_entry("hello", timestamp="2026-02-15T10:00:00.000Z")]
+        _setup_project(tmp_path, "/home/user/real-project", "fallback-sess", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        # Pass a wrong project path — should still find the session via scan-all
+        data = svc.read_session("fallback-sess", project_path="/home/user/wrong-project")
+
+        assert data.session_id == "fallback-sess"
+
+    def test_find_session_with_already_encoded_path(self, tmp_path):
+        """Already-encoded project path should work without double-encoding."""
+        entries = [_user_entry("hello", timestamp="2026-02-15T10:00:00.000Z")]
+        _setup_project(tmp_path, "/home/user/my-project", "encoded-sess", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        # Pass the already-encoded directory name as project_path
+        encoded = ClaudeSessionService.encode_project_path("/home/user/my-project")
+        data = svc.read_session("encoded-sess", project_path=encoded)
+
+        assert data.session_id == "encoded-sess"
+
+    def test_find_session_file_returns_none_when_missing(self, tmp_path):
+        """Should return None when session ID doesn't exist anywhere."""
+        entries = [_user_entry("hello", timestamp="2026-02-15T10:00:00.000Z")]
+        _setup_project(tmp_path, "/home/user/proj", "existing-sess", entries)
+
+        svc = ClaudeSessionService(claude_projects_dir=tmp_path)
+        result = svc.find_session_file("nonexistent-sess", project_path="/home/user/proj")
+
+        assert result is None
+
 
 # --- Timezone conversion tests ---
 
