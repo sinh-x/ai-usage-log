@@ -2,7 +2,7 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from .tools import claude_session_tools, context_tools, daily_tools, jsonl_stats_tools, project_tools, session_tools, stats_tools, tracking_tools
+from .tools import claude_session_tools, context_tools, daily_tools, jsonl_stats_tools, project_tools, session_tools, skill_tools, stats_tools, tracking_tools
 
 mcp = FastMCP(
     "ai_usage_log",
@@ -67,6 +67,7 @@ stats_tools.register(mcp)
 jsonl_stats_tools.register(mcp)
 project_tools.register(mcp)
 daily_tools.register(mcp)
+skill_tools.register(mcp)
 
 
 def main() -> None:
