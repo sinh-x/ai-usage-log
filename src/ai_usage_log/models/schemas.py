@@ -17,6 +17,7 @@ class SessionContext(BaseModel):
     time: str
     year: str
     month: str
+    server_version: str
 
 
 class StructureResult(BaseModel):

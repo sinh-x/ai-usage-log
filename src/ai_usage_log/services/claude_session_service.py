@@ -121,6 +121,12 @@ class ClaudeSessionService:
     def _get_project_dir(self, project_path: str) -> Path | None:
         """Find the project directory, either by encoded path or scanning."""
         if project_path:
+            # Try the raw value as a directory name first (handles already-encoded paths)
+            raw_candidate = self.claude_projects_dir / project_path
+            if raw_candidate.is_dir():
+                return raw_candidate
+
+            # Encode and try
             encoded = self.encode_project_path(project_path)
             candidate = self.claude_projects_dir / encoded
             if candidate.is_dir():
@@ -392,14 +398,18 @@ class ClaudeSessionService:
             return None
 
     def _find_session_file(self, session_id: str, project_path: str) -> Path | None:
-        """Find a JSONL session file by ID."""
+        """Find a JSONL session file by ID.
+
+        When project_path is given, tries the encoded directory first.
+        Falls through to scanning all project directories if not found.
+        """
         if project_path:
             proj_dir = self._get_project_dir(project_path)
             if proj_dir:
                 candidate = proj_dir / f"{session_id}.jsonl"
                 if candidate.is_file():
                     return candidate
-            return None
+            # Fall through to scan-all instead of returning None
 
         # Scan all project directories
         if not self.claude_projects_dir.is_dir():
