@@ -17,6 +17,7 @@ from ..config.settings import (
 )
 from ..context import get_context
 from ..models.schemas import PrepareSessionResult, SaveBundleResult, SessionContext
+from ..utils.cache import write_to_cache
 from ..utils.content import resolve_content
 
 
@@ -179,16 +180,21 @@ def register(mcp: FastMCP) -> None:
             "openWorldHint": False,
         },
     )
-    async def prepare_session(cwd: str = "", year: str = "", month: str = "") -> str:
+    async def prepare_session(cwd: str = "", year: str = "", month: str = "", cache_path: str = "") -> str:
         """Batch setup for a new session: context + init dirs + previous session + stats.
 
         Combines get_session_context + init_structure + get_previous_session + get_stats
         into a single call. All original tools remain available individually.
 
+        Always returns a slim response with full data cached to a file.
+        If cache_path is empty, data is auto-saved to /tmp/ai-usage-log/prepare_session-<ts>.json.
+        Use jq to extract specific fields from the cache file.
+
         Args:
             cwd: Current working directory (optional, defaults to server cwd).
             year: Four-digit year (optional, auto-detected if empty).
             month: Two-digit month (optional, auto-detected if empty).
+            cache_path: Path to write full JSON response. Auto-generated in /tmp if empty.
         """
         if not cwd:
             cwd = os.getcwd()
@@ -239,7 +245,29 @@ def register(mcp: FastMCP) -> None:
             computed_stats=computed_stats,
             current_session_timeline=current_timeline,
         )
-        return result.model_dump_json(indent=2)
+        return write_to_cache(
+            result,
+            tool_name="prepare_session",
+            schema_paths=[
+                ".context.date (small — today's date)",
+                ".context.user (small — username)",
+                ".context.project (small — detected project)",
+                ".context.cwd (small — working directory)",
+                ".context.year (small — year)",
+                ".context.month (small — month)",
+                ".structure.created_dirs (small — dirs created)",
+                ".previous_session.path (small — file path)",
+                ".previous_session.content (large — full session markdown)",
+                ".stats.content (large — full stats file text)",
+                ".stats.path (small — path to statistics.md)",
+                ".computed_stats.total_sessions (small — count)",
+                ".computed_stats.by_month (medium — monthly breakdown list)",
+                ".computed_stats.by_agent (medium — per-agent breakdown list)",
+                ".current_session_timeline (large — all conversation turns)",
+            ],
+            cache_path=cache_path,
+            context=context,
+        )
 
     @mcp.tool(
         name="save_session_bundle",
