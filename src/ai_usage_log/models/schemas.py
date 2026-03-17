@@ -334,3 +334,16 @@ class ClaudeSessionList(BaseModel):
     """List of discovered Claude Code sessions."""
     sessions: list[ClaudeSessionInfo]
     count: int
+
+
+class SlimResponse(BaseModel):
+    """Slim response for large-data tools — full JSON saved to cache file.
+
+    Callers use jq to extract specific fields from the cache file on demand.
+    All large-response tools return this when cache_path is provided or auto-generated.
+    """
+    cached_at: str                    # path to the full JSON cache file
+    schema_paths: list[str]           # flat list of jq paths with size hints
+    context: SessionContext | None = None  # inline context metadata (for prepare_session)
+    error: str | None = None          # set if cache file write failed
+    message: str = "Full response cached. Use jq to extract specific fields."

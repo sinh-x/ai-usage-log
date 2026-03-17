@@ -12,16 +12,30 @@ Cross-platform skill for documenting AI sessions, tracking learnings, and identi
 ### Standard Flow (3 MCP calls, 1 user interaction)
 
 ```
-Step 0  prepare_session(cwd)             → context, dirs, previous, stats, computed_stats, timeline
+Step 0  prepare_session(cwd, cache_path) → slim response + full JSON at cache_path
+        ↳ Use jq to read previous_session, stats, computed_stats, timeline from cache_path
 Step 1  (no MCP) Tier Selection          → pick Tier 1/2/3
 Step 2  (no MCP) Session Reflection      → 2-round recall + agent feedback (only user interaction)
-Step 3  get_daily_jsonl_stats(today)     → aggregate JSONL stats for all related sessions
+Step 3  get_daily_jsonl_stats(today, cache_path=...) → slim + full stats at cache_path
+        ↳ Use jq to extract token totals, tools histogram, per-session data
 Step 4  (no MCP) Generate markdown       → assemble content with JSONL stats in Key Stats
 Step 5  (no MCP) Show generated content  → display rendered markdown to user
 Step 6  save_session_bundle(content=...) → auto-save immediately after display (no confirmation)
         ↳ MUST: update_session if Session ID still shows "pending"
 Step 7  (no MCP) Show result summary     → saved path, quick stats, key takeaways
 ```
+
+#### Large-Response Tool Cache Pattern
+
+All 5 large-response tools support `cache_path`:
+- `prepare_session(cwd, cache_path=...)` — full PrepareSessionResult
+- `read_claude_session(session_id, cache_path=...)` — full ClaudeSessionData
+- `read_claude_sessions(session_ids, cache_path=...)` — full ClaudeSessionsBatchResult
+- `get_session_timeline(session_id, cache_path=...)` — full SessionTimeline
+- `get_daily_jsonl_stats(date, cache_path=...)` — full DailyAggregate
+
+If `cache_path` is omitted, auto-saves to `/tmp/ai-usage-log/<tool>-<timestamp>.json`.
+Always returns slim response. Always use `jq` to extract what you need.
 
 ### Tier Selection Cheat Sheet
 
@@ -78,17 +92,37 @@ export AI_USAGE_LOG_PATH=~/Documents/ai-usage
 
 ### Step 0: Prepare Session (1 MCP call)
 
-Call `prepare_session(cwd=<current_working_directory>)`.
+Call `prepare_session(cwd=<current_working_directory>, cache_path=<your_workspace>/session-cache.json)`.
 
-Returns JSON with:
-- `context`: `{user, host, terminal, cwd, project, project_root, date, time, year, month}`
-- `structure`: dirs/files created (idempotent)
-- `previous_session`: latest session content + todos (or null)
-- `stats`: current statistics.md content
-- `computed_stats`: aggregated stats from session filenames (total sessions, by-agent, by-month) or null
-- `current_session_timeline`: auto-detected timeline from current JSONL session with RFC3339 timestamps, user prompts, tools used, and files modified (or null if no active JSONL session)
+**All large-response tools now use a slim cache pattern.** Full JSON is written to `cache_path` (or auto-generated under `/tmp/ai-usage-log/` if omitted). The tool always returns a slim response — use `jq` to extract specific fields on demand.
 
-Store these values — they're reused throughout. **`current_session_timeline` is the primary source for Timeline timestamps** — use its entries instead of fabricating times.
+#### Slim response fields (always inline):
+- `cached_at`: path to the full JSON cache file
+- `schema_paths`: flat list of available jq paths with size hints
+- `context`: core metadata `{user, host, terminal, cwd, project, project_root, date, time, year, month}` — inline, always small
+- `message`: reminder to use jq
+
+#### Extracting data from the cache:
+
+```bash
+# Get context inline from slim response — no jq needed
+# context.date, context.user, context.project, context.cwd are always inline
+
+# Read previous session content
+jq -r '.previous_session.content' <cache_path>
+
+# Get stats file content
+jq -r '.stats.content' <cache_path>
+
+# Get computed stats summary
+jq '.computed_stats.total_sessions, .computed_stats.by_agent' <cache_path>
+
+# Get session timeline entries
+jq '.current_session_timeline.entries' <cache_path>
+```
+
+Store `cached_at` from the slim response — it's the path to use for all jq extractions.
+**`current_session_timeline` is the primary source for Timeline timestamps** — use its entries instead of fabricating times.
 
 If `previous_session` exists and has open todos, present to user:
 
